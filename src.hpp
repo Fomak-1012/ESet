@@ -82,6 +82,128 @@ private:
         bool operator==(const iterator& other) const { return node == other.node; }
         bool operator!=(const iterator& other) const { return node != other.node; }
     };
+
+    iterator insert(const Key& key) {
+        Node* new_node = new Node(key);
+        if (!root) {
+            root = new_node;
+            header = new Node(Key(), 1, nullptr, root, nullptr); // header的左子树指向root
+            size++;
+            return iterator(new_node, this);
+        }
+        Node* parent = nullptr;
+        Node* current = root;
+        while (current) {
+            parent = current;
+            if (cmp(key, current->data)) {
+                current = current->left;
+            } 
+            else {
+                current = current->right;
+            }
+        }
+        new_node->parent = parent;
+        if (cmp(key, parent->data)) {
+            parent->left = new_node;
+        } 
+        else {
+            parent->right = new_node;
+        }
+        size++;
+        // 插入后修复红黑树性质
+        insert_fixup(new_node);
+        return iterator(new_node, this);
+    }
+
+    void left_rotate(Node* x) {
+        Node* y = x->right;
+        x->right = y->left;
+        if (y->left) y->left->parent = x;
+        y->parent = x->parent;
+        if (!x->parent) {
+            root = y;
+        } 
+        else {
+            if (x == x->parent->left) {
+                x->parent->left = y;
+            } 
+            else {
+                x->parent->right = y;
+            }
+        }
+        y->left = x;
+        x->parent = y;
+    }
+
+    void right_rotate(Node* x) {
+        Node* y = x->left;
+        x->left = y->right;
+        if (y->right) y->right->parent = x;
+        y->parent = x->parent;
+        if (!x->parent) {
+            root = y;
+        } 
+        else {
+            if (x == x->parent->right) {
+                x->parent->right = y;
+            } 
+            else {
+                x->parent->left = y;
+            }
+        }
+        y->right = x;
+        x->parent = y;
+    }
+
+    void insert_fixup(Node* z) {
+        while (z->parent && z->parent->color == 0) {
+            if (z->parent == z->parent->parent->left) {
+                Node* y = z->parent->parent->right;
+                if (y && y->color == 0) {
+                    z->parent->color = 1;
+                    y->color = 1;
+                    z->parent->parent->color = 0;
+                    z = z->parent->parent;
+                } 
+                else {
+                    if (z == z->parent->right) {
+                        z = z->parent;
+                        left_rotate(z);
+                    }
+                    z->parent->color = 1;
+                    z->parent->parent->color = 0;
+                    right_rotate(z->parent->parent);
+                }
+            } 
+            else {
+                Node* y = z->parent->parent->left;
+                if (y && y->color == 0) {
+                    z->parent->color = 1;
+                    y->color = 1;
+                    z->parent->parent->color = 0;
+                    z = z->parent->parent;
+                } 
+                else {
+                    if (z == z->parent->left) {
+                        z = z->parent;
+                        right_rotate(z);
+                    }
+                    z->parent->color = 1;
+                    z->parent->parent->color = 0;
+                    left_rotate(z->parent->parent);
+                }
+            }
+        }
+        root->color = 1; // 根节点必须为黑色
+    }
+
+    void clear(Node* node) {
+        if (node) {
+            clear(node->left);
+            clear(node->right);
+            delete node;
+        }
+    }
 public:
     Eset() : root(nullptr), header(nullptr), size(0) {}
     ~Eset() { clear(root); }
@@ -100,8 +222,15 @@ public:
         return *this;
     }
     
-    template< class... Args >
-    std::pair<iterator, bool> emplace( Args&&... args ); 
+    template<class... Args>
+    std::pair<iterator, bool> emplace(Args&&... args) {
+         Key key(std::forward<Args>(args)...);
+         auto it = find(key);
+         if (it != end()) {
+             return {it, false};
+         }
+         return {insert(key), true};
+    }
     
     size_t erase(const Key& key);
     iterator find(const Key& key) const {
