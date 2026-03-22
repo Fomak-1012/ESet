@@ -57,6 +57,12 @@ public:
             return temp;
         }
         iterator& operator--() {
+            if (*this == tree->end()) {
+                if (!tree->root) return *this;
+                node = tree->root;
+                while (node->right) node = node->right;
+                return *this;
+            }
             if (*this == tree->begin()) 
                 return *this;
             if (node->left) {
@@ -86,7 +92,7 @@ public:
         Node* new_node = new Node(key);
         if (!root) {
             root = new_node;
-            header = new Node(Key(), 1, nullptr, root, nullptr); // header的左子树指向root
+            root->color = 1;
             size_++;
             return iterator(new_node, this);
         }
@@ -109,9 +115,7 @@ public:
             parent->right = new_node;
         }
         size_++;
-        // 插入后修复红黑树性质
         insert_fixup(new_node);
-        header->left = root;
         return iterator(new_node, this);
     }
 private:
@@ -130,6 +134,7 @@ private:
 
     void erase_fixup(Node* x, Node* x_parent) {
         while (x != root && (!x || x->color == 1)) {
+            if (!x_parent) break;
             if (x == x_parent->left) {
                 Node* w = x_parent->right;
                 if (w && w->color == 0) { // 兄弟节点是红色
@@ -137,6 +142,11 @@ private:
                     x_parent->color = 0;
                     left_rotate(x_parent);
                     w = x_parent->right;
+                }
+                if (!w) {
+                    x = x_parent;
+                    x_parent = x_parent->parent;
+                    continue;
                 }
                 if ((!w->left || w->left->color == 1) && (!w->right || w->right->color == 1)) {
                     if (w) w->color = 0;
@@ -162,6 +172,11 @@ private:
                     x_parent->color = 0;
                     right_rotate(x_parent);
                     w = x_parent->left;
+                }
+                if (!w) {
+                    x = x_parent;
+                    x_parent = x_parent->parent;
+                    continue;
                 }
                 if ((!w->right || w->right->color == 1) && (!w->left || w->left->color == 1)) {
                     if (w) w->color = 0;
@@ -226,7 +241,7 @@ private:
     }
 
     void insert_fixup(Node* z) {
-        while (z->parent && z->parent->color == 0) {
+        while (z->parent && z->parent->parent && z->parent->color == 0) {
             if (z->parent == z->parent->parent->left) {
                 Node* y = z->parent->parent->right;
                 if (y && y->color == 0) {
@@ -276,10 +291,13 @@ private:
     }
 public:
     ESet() : root(nullptr), header(nullptr), size_(0) {}
-    ~ESet() { clear(root); }
+    ~ESet() {
+        clear(root);
+        delete header;
+    }
 
     // 硬拷贝
-    ESet(const ESet& other) {
+    ESet(const ESet& other) : root(nullptr), header(nullptr), size_(0) {
         for (auto it = other.begin(); it != other.end(); ++it) {
             this->emplace(*it);
         }
@@ -300,6 +318,7 @@ public:
     ESet& operator=(ESet&& other) noexcept {
         if (this != &other) {
             clear(root);
+            delete header;
             root = other.root;
             header = other.header;
             size_ = other.size_;
@@ -321,19 +340,17 @@ public:
     
     size_t erase(const Key& key) {
         Node* z = root;
-        // 1. 查找要删除的节点
         while (z) {
             if (cmp(key, z->data)) z = z->left;
             else if (cmp(z->data, key)) z = z->right;
-            else break; // 找到了
+            else break; 
         }
-        if (!z) return 0; // 没找到
+        if (!z) return 0;
 
-        // 2. 红黑树的删除逻辑
         Node* y = z;
         bool y_original_color = y->color;
         Node* x = nullptr;
-        Node* x_parent = nullptr; // 因为 x 可能为空，必须单独记录它的父节点以供 fixup 使用
+        Node* x_parent = nullptr;
 
         if (!z->left) {
             x = z->right;
@@ -344,7 +361,6 @@ public:
             x_parent = z->parent;
             transplant(z, z->left);
         } else {
-            // 找后继节点
             y = z->right;
             while (y->left) y = y->left;
             y_original_color = y->color;
@@ -361,24 +377,14 @@ public:
             transplant(z, y);
             y->left = z->left;
             y->left->parent = y;
-            y->color = z->color; // y 继承 z 的颜色
+            y->color = z->color;
         }
         
         delete z;
         size_--;
 
-        // 3. 如果删掉的物理节点 y 是黑色，可能会破坏红黑树性质，需要修复
-        if (y_original_color == 1) { // 1 代表黑色
+        if (y_original_color == 1) { 
             erase_fixup(x, x_parent);
-        }
-        if (header) {
-            header->left = root;
-        }
-        
-        // 特殊处理：如果树被删空了，清理 header
-        if (size_ == 0 && header) {
-            delete header;
-            header = nullptr;
         }
 
         return 1;
@@ -401,7 +407,6 @@ public:
 
     size_t range(const Key& l, const Key& r) const {
         size_t count = 0;
-        // 从 >= l 的第一个元素开始，遍历直到元素 > r
         for (auto it = lower_bound(l); it != end() && !cmp(r, *it); ++it) {
             count++;
         }
@@ -414,22 +419,22 @@ public:
 
     iterator lower_bound(const Key& key) const {
         Node* current = root;
-        Node* result = header; // 默认返回 end()
+        Node* result = nullptr; 
         while (current) {
-            if (!cmp(current->data, key)) { // current->data >= key
+            if (!cmp(current->data, key)) {
                 result = current;
-                current = current->left;    // 继续往左找更贴近的
+                current = current->left;    
             } else {
-                current = current->right;   // current->data < key
+                current = current->right;   
             }
         }
         return iterator(result, this);
     }
     iterator upper_bound(const Key& key) const {
         Node* current = root;
-        Node* result = header; 
+        Node* result = nullptr; 
         while (current) {
-            if (cmp(key, current->data)) {  // current->data > key
+            if (cmp(key, current->data)) { 
                 result = current;
                 current = current->left;
             } else {
@@ -442,8 +447,6 @@ public:
     // 要O(1)的begin和end，所以可能要有个Header节点
     iterator begin() const noexcept {
         if (!root) return end();
-        // 你的 insert 并没有动态维护 leftmost，因此这里用 O(log N) 的方式找最小值。
-        // 若要实现严格的 O(1) begin，需在 insert/erase 中维护 header->left 始终指向最小节点。
         Node* current = root;
         while (current->left) {
             current = current->left;
