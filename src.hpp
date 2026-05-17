@@ -14,11 +14,21 @@ private:
         Node* right;
         Node* parent;
         bool color; // 0 for red, 1 for black
+        size_t subtree_size;
+        Node* subtree_min;
+        Node* subtree_max;
         Node(const Key& val, bool c = 0, Node* p =nullptr, Node* l = nullptr, Node* r = nullptr)
-            : data(val), color(c), parent(p), left(l), right(r) {}
+            : data(val), left(l), right(r), parent(p), color(c), subtree_size(1), subtree_min(this), subtree_max(this) {}
     };
+
+    struct HeaderNode {
+        Node* parent;
+        Node* left;
+        Node* right;
+    };
+
     Node* root;
-    Node* header; // 用于实现begin和end
+    HeaderNode header; // parent=root, left=min, right=max
     Compare cmp;
     size_t size_;
 public:
@@ -47,7 +57,7 @@ public:
                     node = tmp_parent;
                     tmp_parent = tmp_parent->parent;
                 }
-                node = tmp_parent ? tmp_parent : tree->header;
+                node = tmp_parent;
             }
             return *this;
         }
@@ -58,9 +68,8 @@ public:
         }
         iterator& operator--() {
             if (*this == tree->end()) {
-                if (!tree->root) return *this;
-                node = tree->root;
-                while (node->right) node = node->right;
+                if (!tree->header.right) return *this;
+                node = tree->header.right;
                 return *this;
             }
             if (*this == tree->begin()) 
@@ -88,12 +97,81 @@ public:
         bool operator!=(const iterator& other) const { return node != other.node; }
     };
 
+private:
+    static size_t node_size(Node* node) {
+        return node ? node->subtree_size : 0;
+    }
+
+    static void pull(Node* node) {
+        if (node) {
+            node->subtree_size = node_size(node->left) + node_size(node->right) + 1;
+            node->subtree_min = node->left ? node->left->subtree_min : node;
+            node->subtree_max = node->right ? node->right->subtree_max : node;
+        }
+    }
+
+    void pull_up(Node* node) {
+        while (node) {
+            pull(node);
+            node = node->parent;
+        }
+    }
+
+    Node* minimum(Node* node) const {
+        if (!node) return nullptr;
+        while (node->left) node = node->left;
+        return node;
+    }
+
+    Node* maximum(Node* node) const {
+        if (!node) return nullptr;
+        while (node->right) node = node->right;
+        return node;
+    }
+
+    void refresh_header() {
+        header.parent = root;
+        header.left = root ? root->subtree_min : nullptr;
+        header.right = root ? root->subtree_max : nullptr;
+    }
+
+    size_t count_less(const Key& key) const {
+        size_t count = 0;
+        Node* current = root;
+        while (current) {
+            if (cmp(current->data, key)) {
+                count += node_size(current->left) + 1;
+                current = current->right;
+            } else {
+                current = current->left;
+            }
+        }
+        return count;
+    }
+
+    size_t count_less_equal(const Key& key) const {
+        size_t count = 0;
+        Node* current = root;
+        while (current) {
+            if (!cmp(key, current->data)) {
+                count += node_size(current->left) + 1;
+                current = current->right;
+            } else {
+                current = current->left;
+            }
+        }
+        return count;
+    }
+
+public:
+
     iterator insert(const Key& key) {
         Node* new_node = new Node(key);
-        if (!root) {
+        if (!root) {              // 建树
             root = new_node;
-            root->color = 1;
+            root->color = 1;       //根必黑
             size_++;
+            refresh_header();
             return iterator(new_node, this);
         }
         Node* parent = nullptr;
@@ -116,90 +194,100 @@ public:
         }
         size_++;
         insert_fixup(new_node);
+        pull_up(new_node);
+        refresh_header();
         return iterator(new_node, this);
     }
 private:
     void transplant(Node* u, Node* v) {
         if (!u->parent) {
             root = v;
-        } else if (u == u->parent->left) {
-            u->parent->left = v;
-        } else {
-            u->parent->right = v;
+        } 
+        else {
+            if (u == u->parent->left) {
+                u->parent->left = v;
+            } 
+            else {
+                u->parent->right = v;
+            }
         }
         if (v) {
             v->parent = u->parent;
         }
     }
 
-    void erase_fixup(Node* x, Node* x_parent) {
-        while (x != root && (!x || x->color == 1)) {
-            if (!x_parent) break;
-            if (x == x_parent->left) {
-                Node* w = x_parent->right;
-                if (w && w->color == 0) { // 兄弟节点是红色
-                    w->color = 1;
-                    x_parent->color = 0;
-                    left_rotate(x_parent);
-                    w = x_parent->right;
+    void erase_fixup(Node* cur, Node* father) {
+        while (cur != root && (!cur || cur->color == 1)) {
+            if (!father) break;
+            if (cur == father->left) {
+                #define brother (father->right)
+
+                if (brother && brother->color == 0) { // 状况1：兄弟是红色
+                    brother->color = 1;
+                    father->color = 0;
+                    left_rotate(father);
                 }
-                if (!w) {
-                    x = x_parent;
-                    x_parent = x_parent->parent;
+                if (!brother) {
+                    cur = father;
+                    father = father->parent;
                     continue;
                 }
-                if ((!w->left || w->left->color == 1) && (!w->right || w->right->color == 1)) {
-                    if (w) w->color = 0;
-                    x = x_parent;
-                    x_parent = x->parent;
-                } else {
-                    if (!w->right || w->right->color == 1) {
-                        if (w->left) w->left->color = 1;
-                        w->color = 0;
-                        right_rotate(w);
-                        w = x_parent->right;
+                if ((!brother->left || brother->left->color == 1) && 
+                    (!brother->right || brother->right->color == 1)) { // 状况2：两个侄子均为黑
+                    brother->color = 0;
+                    cur = father;
+                    father = cur->parent;
+                } 
+                else {
+                    if (!brother->right || brother->right->color == 1) { // 状况3：左红右黑
+                        if (brother->left) brother->left->color = 1;
+                        brother->color = 0;
+                        right_rotate(brother);
                     }
-                    w->color = x_parent->color;
-                    x_parent->color = 1;
-                    if (w->right) w->right->color = 1;
-                    left_rotate(x_parent);
-                    x = root;
+                    // 状况4：右侄子为红
+                    brother->color = father->color;
+                    father->color = 1;
+                    if (brother->right) brother->right->color = 1;
+                    left_rotate(father);
+                    cur = root;
                 }
-            } else { // 对称情况：x 是右孩子
-                Node* w = x_parent->left;
-                if (w && w->color == 0) {
-                    w->color = 1;
-                    x_parent->color = 0;
-                    right_rotate(x_parent);
-                    w = x_parent->left;
+                #undef brother
+            } 
+            else { // 完全对称
+                #define brother (father->left)
+                if (brother && brother->color == 0) {
+                    brother->color = 1;
+                    father->color = 0;
+                    right_rotate(father);
                 }
-                if (!w) {
-                    x = x_parent;
-                    x_parent = x_parent->parent;
+                if (!brother) {
+                    cur = father;
+                    father = father->parent;
                     continue;
                 }
-                if ((!w->right || w->right->color == 1) && (!w->left || w->left->color == 1)) {
-                    if (w) w->color = 0;
-                    x = x_parent;
-                    x_parent = x->parent;
-                } else {
-                    if (!w->left || w->left->color == 1) {
-                        if (w->right) w->right->color = 1;
-                        w->color = 0;
-                        left_rotate(w);
-                        w = x_parent->left;
+                if ((!brother->right || brother->right->color == 1) && 
+                    (!brother->left || brother->left->color == 1)) {
+                    brother->color = 0;
+                    cur = father;
+                    father = cur->parent;
+                } 
+                else {
+                    if (!brother->left || brother->left->color == 1) {
+                        if (brother->right) brother->right->color = 1;
+                        brother->color = 0;
+                        left_rotate(brother);
                     }
-                    w->color = x_parent->color;
-                    x_parent->color = 1;
-                    if (w->left) w->left->color = 1;
-                    right_rotate(x_parent);
-                    x = root;
+                    brother->color = father->color;
+                    father->color = 1;
+                    if (brother->left) brother->left->color = 1;
+                    right_rotate(father);
+                    cur = root;
                 }
+                #undef brother
             }
         }
-        if (x) x->color = 1;
+        if (cur) cur->color = 1; 
     }
-
     void left_rotate(Node* x) {
         Node* y = x->right;
         x->right = y->left;
@@ -218,6 +306,8 @@ private:
         }
         y->left = x;
         x->parent = y;
+        pull(x);
+        pull(y);
     }
 
     void right_rotate(Node* x) {
@@ -238,48 +328,56 @@ private:
         }
         y->right = x;
         x->parent = y;
+        pull(x);
+        pull(y);
     }
 
-    void insert_fixup(Node* z) {
-        while (z->parent && z->parent->parent && z->parent->color == 0) {
-            if (z->parent == z->parent->parent->left) {
-                Node* y = z->parent->parent->right;
-                if (y && y->color == 0) {
-                    z->parent->color = 1;
-                    y->color = 1;
-                    z->parent->parent->color = 0;
-                    z = z->parent->parent;
+    void insert_fixup(Node* cur) {
+        #define father (cur->parent)
+        #define grandpa (cur->parent->parent)
+        while (father && grandpa && father->color == 0) {       //和父节点都是红的
+            if (father == grandpa->left) {
+                #define uncle  (cur->parent->parent->right)
+                if (uncle && uncle->color == 0) {
+                    father->color = 1;
+                    uncle->color = 1;
+                    grandpa->color = 0;
+                    cur = grandpa;
                 } 
                 else {
-                    if (z == z->parent->right) {
-                        z = z->parent;
-                        left_rotate(z);
+                    if (cur == father->right) {
+                        cur = father;
+                        left_rotate(cur);
                     }
-                    z->parent->color = 1;
-                    z->parent->parent->color = 0;
-                    right_rotate(z->parent->parent);
+                    father->color = 1;
+                    grandpa->color = 0;
+                    right_rotate(grandpa);
                 }
+                #undef uncle
             } 
             else {
-                Node* y = z->parent->parent->left;
-                if (y && y->color == 0) {
-                    z->parent->color = 1;
-                    y->color = 1;
-                    z->parent->parent->color = 0;
-                    z = z->parent->parent;
+                #define uncle (cur->parent->parent->left)
+                if (uncle && uncle->color == 0) {
+                    father->color = 1;
+                    uncle->color = 1;
+                    grandpa->color = 0;
+                    cur = grandpa;
                 } 
                 else {
-                    if (z == z->parent->left) {
-                        z = z->parent;
-                        right_rotate(z);
+                    if (cur == father->left) {
+                        cur = father;
+                        right_rotate(cur);
                     }
-                    z->parent->color = 1;
-                    z->parent->parent->color = 0;
-                    left_rotate(z->parent->parent);
+                    father->color = 1;
+                    grandpa->color = 0;
+                    left_rotate(grandpa);
                 }
+                #undef uncle
             }
         }
         root->color = 1; // 根节点必须为黑色
+        #undef father
+        #undef grandpa
     }
 
     void clear(Node* node) {
@@ -290,14 +388,12 @@ private:
         }
     }
 public:
-    ESet() : root(nullptr), header(nullptr), size_(0) {}
+    ESet() : root(nullptr), header{nullptr, nullptr, nullptr}, size_(0) {}
     ~ESet() {
         clear(root);
-        delete header;
     }
 
-    // 硬拷贝
-    ESet(const ESet& other) : root(nullptr), header(nullptr), size_(0) {
+    ESet(const ESet& other) : root(nullptr), header{nullptr, nullptr, nullptr}, size_(0) {
         for (auto it = other.begin(); it != other.end(); ++it) {
             this->emplace(*it);
         }
@@ -312,18 +408,17 @@ public:
     
     ESet(ESet&& other) noexcept : root(other.root), header(other.header), size_(other.size_) {
         other.root = nullptr;
-        other.header = nullptr;
+        other.header = {nullptr, nullptr, nullptr};
         other.size_ = 0;
     }
     ESet& operator=(ESet&& other) noexcept {
         if (this != &other) {
             clear(root);
-            delete header;
             root = other.root;
             header = other.header;
             size_ = other.size_;
             other.root = nullptr;
-            other.header = nullptr;
+            other.header = {nullptr, nullptr, nullptr};
             other.size_ = 0;
         }
         return *this;
@@ -339,54 +434,59 @@ public:
     }
     
     size_t erase(const Key& key) {
-        Node* z = root;
-        while (z) {
-            if (cmp(key, z->data)) z = z->left;
-            else if (cmp(z->data, key)) z = z->right;
+        Node* cur = root;
+        while (cur) {
+            if (cmp(key, cur->data)) cur = cur->left;
+            else if (cmp(cur->data, key)) cur = cur->right;
             else break; 
         }
-        if (!z) return 0;
+        if (!cur) return 0;
 
-        Node* y = z;
-        bool y_original_color = y->color;
-        Node* x = nullptr;
-        Node* x_parent = nullptr;
+        Node* toerase = cur;                
+        bool toerase_color = toerase->color;      
+        Node* standin = nullptr;            
+        Node* standin_father = nullptr;     
 
-        if (!z->left) {
-            x = z->right;
-            x_parent = z->parent;
-            transplant(z, z->right);
-        } else if (!z->right) {
-            x = z->left;
-            x_parent = z->parent;
-            transplant(z, z->left);
-        } else {
-            y = z->right;
-            while (y->left) y = y->left;
-            y_original_color = y->color;
-            x = y->right;
+        if (!cur->left) {           
+            standin = cur->right;
+            standin_father = cur->parent;
+            transplant(cur, standin);
+        } 
+        else if (!cur->right) {      
+            standin = cur->left;
+            standin_father = cur->parent;
+            transplant(cur, standin);
+        } 
+        else {                       
+            toerase = cur->right;
+            while (toerase->left) toerase = toerase->left;
+            toerase_color = toerase->color;      
+            standin = toerase->right;             
             
-            if (y->parent == z) {
-                x_parent = y;
+            if (toerase->parent == cur) {
+                standin_father = toerase;        
             } else {
-                x_parent = y->parent;
-                transplant(y, y->right);
-                y->right = z->right;
-                y->right->parent = y;
+                standin_father = toerase->parent; 
+                transplant(toerase, standin);    
+                toerase->right = cur->right; 
+                toerase->right->parent = toerase;
             }
-            transplant(z, y);
-            y->left = z->left;
-            y->left->parent = y;
-            y->color = z->color;
+            transplant(cur, toerase);      
+            toerase->left = cur->left;     
+            toerase->left->parent = toerase;
+            toerase->color = cur->color;   
         }
         
-        delete z;
+        delete cur;
         size_--;
 
-        if (y_original_color == 1) { 
-            erase_fixup(x, x_parent);
+        pull_up(standin_father ? standin_father : standin);
+
+        if (toerase_color == 1) { 
+            erase_fixup(standin, standin_father);
         }
 
+        refresh_header();
         return 1;
     }
     iterator find(const Key& key) const {
@@ -406,11 +506,8 @@ public:
     }
 
     size_t range(const Key& l, const Key& r) const {
-        size_t count = 0;
-        for (auto it = lower_bound(l); it != end() && !cmp(r, *it); ++it) {
-            count++;
-        }
-        return count;
+        if (cmp(r, l)) return 0;
+        return count_less_equal(r) - count_less(l);
     }
 
     size_t size() const noexcept {
@@ -444,17 +541,11 @@ public:
         return iterator(result, this);
     }
 
-    // 要O(1)的begin和end，所以可能要有个Header节点
     iterator begin() const noexcept {
-        if (!root) return end();
-        Node* current = root;
-        while (current->left) {
-            current = current->left;
-        }
-        return iterator(current, this);
+        return iterator(header.left, this);
     }
     iterator end() const noexcept {
-        return iterator(header, this);
+        return iterator(nullptr, this);
     }
 };
 
